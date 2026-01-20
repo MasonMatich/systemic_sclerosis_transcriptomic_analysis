@@ -102,13 +102,17 @@ This approach removes inherent biological genetic differences between sexes (e.g
 
 ### Microarray Results
 - Identified disease-relevant DEGs in Diffuse SSc
+  
 | SSc DEGs |
 |:---------------:|
 | ![Heatmap](microarray_workspace/figures/heatmap.png) |
+
 - Visual inspection revealed two candidate genes showing potential sex-specific disease patterns
+  
 | PKM2 Expression | DGKA Expression |
 |:---------------:|:---------------:|
 | ![PKM2](microarray_workspace/figures/PKM2.png) | ![DGKA](microarray_workspace/figures/DGKA.png) |
+
 - Statistical confirmation limited by sample size constraints
 
 ### RNA-Seq Results
