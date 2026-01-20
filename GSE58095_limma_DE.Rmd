@@ -1,0 +1,430 @@
+---
+title: "GSE58095_3"
+output: html_document
+---
+
+```{r}
+#libraries
+library(dplyr)
+library(tidyverse)
+library(limma)
+library(Biobase)
+library(GEOquery)
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+library(edgeR)
+library(ggplot2)
+library(wesanderson)
+```
+
+# Load in Data and get Metadata
+## Load in series matrix
+```{r}
+#header <- read.delim(
+#  "../../data/GSE58095/GSE58095_non-normalized_header_removed.txt",
+#  nrows = 1, 
+#  header = TRUE
+#  )
+
+#colnames(header)
+
+# Read in Data
+x <- read.ilmn(
+  files = "../../data/GSE58095/GSE58095_non-normalized_header_removed.txt",
+  probeid = "ID_REF",  # or whatever your probe ID column is called
+  expr = "SAMPLE", # or the pattern for your expression columns
+  other.columns = "Detection.Pval"  # if you have detection p-values
+  )
+```
+
+# Selecting samples by Metadata
+## Load metadata
+```{r}
+# Load in local metadata produced by Claude parsing through series_matrix.txt
+metadata <- read.delim("../../data/GSE58095/GSE58095_metadata_verified.tsv")
+
+# Convert Gender from 0/1 to String
+metadata <- metadata %>%
+  mutate(Gender_Male = ifelse(Gender_Male == 0,"Female","Male"))
+```
+
+## Modify expression matrix colnames to align with metadata
+```{r}
+colnames(x$E) <- metadata$GSM
+```
+
+## Modify Detection.Pval Matrix colnames to align with matrix
+```{r}
+colnames(x$other$Detection.Pval) <- metadata$GSM
+```
+
+## Selecting individuals for re-analysis
+```{r}
+# Interested in both Males and Females
+# Interested in Diffuse systemic sclerosis!!
+# Interested in affected skin biopsies
+metadata <- metadata %>%
+  filter(Disease_Subtype == c("Dif", "None")) %>%
+  filter(Affected == "1" | Group == "Control")
+  
+print(table(metadata$Group))
+# Control     SSc 
+#    17      18 
+
+print(table(metadata$Gender_Male))
+#Female   Male 
+#    25     10 
+```
+
+## Filter Samples in Expression Matrix
+```{r}
+x$E <- x$E %>%
+  data.frame() %>%
+  select(metadata$GSM)
+
+# Confirm sample selection
+if(!any(colnames(x$E) == metadata$GSM)){
+  stop("The number of columns remaining in x$E does not equal the number of rows in metadata!")
+}
+```
+
+## Filter Samples in Detection.Pval Matrix
+```{r}
+x$other$Detection.Pval <- x$other$Detection.Pval %>%
+  data.frame() %>%
+  select(metadata$GSM)
+
+# Confirm sample selection
+if(!any(colnames(x$other$Detection.Pval) == metadata$GSM)){
+  stop("The number of columns remaining in x$other$Detection.Pval does not equal the number of rows in metadata!")
+}
+```
+
+# Explore Data Distribution
+```{r}
+#head(x$E)
+boxplot(
+  log2(x$E),
+  range=0,
+  ylab="log2 intensity",
+  col = ifelse(metadata$Group == "SSc", "lightcoral", "lightblue"),
+  cex.axis = 0.6,
+  las = 2
+  )
+```
+
+
+# Normalization and Filtering
+```{r}
+# Copy Detection.Pval to Detection
+x$other$Detection <- x$other$Detection.Pval
+
+# background correction and normalize:
+y <- neqc(x)
+  ## neqc() function performs normexp background correction, quantile normalizes, and log2 transforms.
+
+dim(y)
+  # [1] 47279    35
+```
+
+## Filter probes that are not expressed
+```{r}
+expressed <- rowSums(y$other$Detection < 0.05) >= 10
+y <- y[expressed,]
+dim(y)
+# [1] 20946    35
+# Removed 26,333 lowly expressed genes
+```
+
+# View Samples with leading dimensions
+## Plot multi-dimensional scaling plot (Disease state)
+```{r}
+# Plot leading dimensions against Disease state
+plotMDS(y, labels = metadata$Group)
+```
+
+## Plot multi-dimensional scaling plot (Sex)
+```{r}
+# Plot leading dimensions against Sex
+plotMDS(y, labels = metadata$Gender_Male)
+```
+
+
+# Differential Expression Testing
+
+## Combined (Sex and Disease) Factor Design
+```{r}
+# Create a combined group factor
+group_sex <- factor(paste(metadata$Group, metadata$Gender_Male, sep = "."))
+group <- factor(metadata$Group)
+sex <- factor(metadata$Gender_Male)
+
+# Design matrix with no intercept
+design <- model.matrix(~group * sex)
+colnames(design)
+```
+
+## Fit Linear Model (SSc vs Control)
+```{r}
+# Fit linear model
+fit <- lmFit(y, design)
+
+fit <- eBayes(fit, trend = TRUE)
+
+summary(decideTests(fit, method="global"))
+```
+
+# View Top Tables
+## Group SSc DEGs
+```{r}
+# Results for SSc vs Control in FEMALES only
+groupSSc <- topTable(
+  fit, 
+  coef = "groupSSc", 
+  number = Inf
+  )
+
+# Select only significant genes by .05 padj
+groupSSc <- groupSSc %>%
+  filter(groupSSc$adj.P.Val <= .05)
+
+# Print results
+groupSSc
+```
+
+## Interaction Effect DEGs
+```{r}
+# Results for SSc vs Control in FEMALES only
+inter <- topTable(
+  fit, 
+  coef = "groupSSc:sexMale", 
+  number = Inf
+  )
+
+# Select only significant genes by .05 padj
+inter <- inter %>%
+  filter(inter$adj.P.Val <= .05)
+
+# Print results
+inter
+# No significant genes!!
+```
+
+## Add Gene Symbols
+```{r}
+# Download the GPL10558 platform annotation
+# (Illumina HumanHT-12 V4.0 expression beadchip)
+gpl <- getGEO("GPL10558", destdir = ".")
+
+# Extract the annotation table
+platform_annotation <- Table(gpl)
+
+# View available columns
+colnames(platform_annotation)
+
+# Select relevant columns
+platform_annotation <- platform_annotation[, c("ID", "Symbol")]
+  
+# Collect all probes from experiment matrix
+probes <- rownames(x$E)
+
+mapped_genes <- platform_annotation[match(probes, platform_annotation$ID), c("ID", "Symbol")] %>%
+  rownames_to_column("del") %>%
+  select("ID", "Symbol") %>%
+  column_to_rownames("ID")
+```
+
+## Match ProbeID to Symbol
+### Sclerosis vs Control
+```{r}
+# Match ProbeID to Symbol
+groupSSc <- groupSSc %>%
+  mutate(Symbol = mapped_genes[rownames(groupSSc),1], .before = "logFC")
+
+# Match ProbeID to Symbol
+inter <- inter %>%
+    mutate(Symbol = mapped_genes[rownames(inter),1], .before = "logFC")
+
+grep("DGKA", groupSSc$Symbol)
+```
+
+
+### HeatMap
+```{r}
+# Match by the probe IDs (rownames of expr_matrix should match rownames of de_results)
+heatmap_data <- y$E %>%
+  as.data.frame() %>%
+  mutate(Symbol = mapped_genes[rownames(y$E),1], .before = "GSM1145870")
+
+# Select top DE genes (e.g., top 50 by adj.P.Val)
+top_genes <- groupSSc[order(groupSSc$adj.P.Val), ][1:50, ]
+
+# Extract expression data for these genes
+heatmap_data <- heatmap_data[rownames(top_genes), ]
+print(heatmap_data)
+
+# Remove the Symbol column and set it as rownames
+heatmap_matrix <- heatmap_data %>%
+  select(-Symbol) %>%
+  as.matrix()
+
+rownames(heatmap_matrix) <- heatmap_data$Symbol
+
+# Prepare annotation colors with Royal1 palette
+royal1_colors <- wes_palette("Royal1", type = "discrete")
+
+ann_colors <- list(
+  Sex = c("Female" = royal1_colors[1], "Male" = royal1_colors[2]),
+  Group = c("Control" = royal1_colors[3], "SSc" = royal1_colors[4])
+)
+
+# Prepare annotation data frame
+annotation_col <- data.frame(
+  Sex = metadata$Gender_Male,
+  Group = metadata$Group,
+  row.names = colnames(heatmap_matrix)
+)
+
+heatmap <- pheatmap(heatmap_matrix,
+         annotation_col = annotation_col,
+         annotation_colors = ann_colors,
+         scale = "row",
+         clustering_distance_rows = "euclidean",
+         clustering_distance_cols = "euclidean",
+         clustering_method = "complete",
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         fontsize_row = 8,
+         color = colorRampPalette(rev(brewer.pal(11, "RdBu")))(100),
+         main = "Top 50 Differentially Expressed Genes")
+
+#ggsave("../figures/heatmap.pdf", plot = heatmap, width = 8, height = 10)
+```
+
+
+```{r}
+norm_expr_df <- y$E %>%
+  as.data.frame() %>%
+  mutate(Symbol = mapped_genes[rownames(y$E),1], .before = "GSM1145870")
+```
+
+
+# Interaction Plot
+## Prepare Graphing Metadata
+```{r}
+ploting_metadata <- metadata[, c("GSM", "Group", "Gender_Male")]
+
+d <- data.frame(
+  Group = ploting_metadata[["Group"]],
+  Sex = ploting_metadata[["Gender_Male"]],
+  Expr = as.numeric(norm_expr_df["ILMN_1721541", c(2:36)])
+)
+
+d$Group <- factor(d$Group, levels = c("Control", "SSc"))
+d$Sex <- factor(d$Sex, levels = c("Male", "Female"))
+
+# Numeric version of Group for regression
+d$Group_num <- as.numeric(d$Group)
+```
+
+## Gene Plot Function
+```{r}
+GeneInteractionPlotOld <- function(probeID, titleAdd = ""){
+  
+  d$Expr <- as.numeric(norm_expr_df[probeID, c(2:36)])
+  
+  # Plot
+  temp <- ggplot(d, aes(x = Group, y = Expr, color = Sex)) +
+    geom_jitter(width = 0.15, size = 3, alpha = 0.8) +
+    geom_smooth(
+      aes(x = Group_num, y = Expr, color = Sex, group = Sex),
+      method = "lm",
+      se = FALSE,
+      linewidth = 1
+    ) +
+    scale_color_manual(values = c("Female" = "#E41A1C", "Male" = "#377EB8")) + 
+    labs(title = paste0(mapped_genes[probeID, "Symbol"]," " ,titleAdd), x = "Group", y = "Expression") + 
+    theme_bw()
+  
+  print(temp)
+}
+```
+
+## Gene Plot Function v2
+```{r}
+GeneInteractionPlot <- function(probeID, titleAdd = ""){
+  
+  d$Expr <- as.numeric(norm_expr_df[probeID, c(2:36)])
+  
+  # Fit linear models for each sex
+  lm_female <- lm(Expr ~ Group_num, data = d[d$Sex == "Female", ])
+  lm_male <- lm(Expr ~ Group_num, data = d[d$Sex == "Male", ])
+  
+  # Extract coefficients and p-values
+  female_slope <- coef(lm_female)[2]
+  female_p <- summary(lm_female)$coefficients[2, 4]
+  male_slope <- coef(lm_male)[2]
+  male_p <- summary(lm_male)$coefficients[2, 4]
+  
+  # Create annotation text for each sex
+  female_text <- sprintf("Female: slope = %.3f, p = %.3g", female_slope, female_p)
+  male_text <- sprintf("Male: slope = %.3f, p = %.3g", male_slope, male_p)
+  
+  # Plot
+  temp <- ggplot(d, aes(x = Group, y = Expr, color = Sex)) +
+    geom_jitter(width = 0.15, size = 3, alpha = 0.8) +
+    geom_smooth(
+      aes(x = Group_num, y = Expr, color = Sex, group = Sex),
+      method = "lm",
+      se = FALSE,
+      linewidth = 1
+    ) +
+    scale_color_manual(values = c("Female" = "#E41A1C", "Male" = "#377EB8")) + 
+    labs(title = paste0(mapped_genes[probeID, "Symbol"]," " ,titleAdd), x = "Group", y = "Expression") + 
+    annotate("text", x = -Inf, y = Inf, label = female_text, 
+             hjust = -0.1, vjust = 2.2, size = 3.5, color = "#E41A1C") +
+    annotate("text", x = -Inf, y = Inf, label = male_text, 
+             hjust = -0.1, vjust = 1.1, size = 3.5, color = "#377EB8") +
+    theme_bw()
+  
+  print(temp)
+}
+```
+
+
+### Save top 30 Gene Interactin Plots
+```{r}
+pdf("../figures/Top30_SSc_DEGs_andLEF1.pdf")
+for (i in 1:30){
+  GeneInteractionPlot(rownames(groupSSc[i,]))
+}
+dev.off()
+```
+
+## Other Dataset Comparison
+```{r}
+temp_mapped_genes <- mapped_genes %>%
+  rownames_to_column("ProbeID")
+write_csv(temp_mapped_genes, file = "../intermediate data/mapped_genes.csv")
+```
+
+```{r}
+# targeted ones
+pdf("../figures/BulkRNAseq_overlapp_genes.pdf")
+# [1] "AGR3"
+GeneInteractionPlot("ILMN_1728787", "Probe ILMN_1728787")
+
+# [1] "COL11A1"
+GeneInteractionPlot("ILMN_1789507", "Probe ILMN_1789507")
+GeneInteractionPlot("ILMN_2392803", "Probe ILMN_2392803")
+dev.off()
+```
+
+```{r}
+# DGKA
+pdf("../figures/DGKA.pdf")
+GeneInteractionPlot("ILMN_2319913")
+dev.off()
+```
+
