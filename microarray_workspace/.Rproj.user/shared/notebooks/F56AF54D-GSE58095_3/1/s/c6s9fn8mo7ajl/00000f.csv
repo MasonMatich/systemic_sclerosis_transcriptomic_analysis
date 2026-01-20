@@ -1,0 +1,4 @@
+"0","pdf(""../figures/Top30_SSc_DEGs_andLEF1.pdf"")"
+"0","for (i in 1:30){"
+"0","  GeneInteractionPlot(rownames(groupSSc[i,]))"
+"0","}"

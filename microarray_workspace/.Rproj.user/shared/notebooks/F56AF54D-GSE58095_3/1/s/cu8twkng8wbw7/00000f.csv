@@ -1,0 +1,8 @@
+"0","x$other$Detection.Pval <- x$other$Detection.Pval %>%"
+"0","  data.frame() %>%"
+"0","  select(metadata$GSM)"
+"0",""
+"0","# Confirm sample selection"
+"0","if(!any(colnames(x$other$Detection.Pval) == metadata$GSM)){"
+"0","  stop(""The number of columns remaining in x$other$Detection.Pval does not equal the number of rows in metadata!"")"
+"0","}"

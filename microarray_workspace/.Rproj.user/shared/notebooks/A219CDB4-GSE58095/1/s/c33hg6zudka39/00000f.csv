@@ -1,0 +1,6 @@
+"0","# Load in local metadata produced by Claude parsing through series_matrix.txt"
+"0","metadata <- read.delim(""../../data/GSE58095/GSE58095_metadata_verified.tsv"")"
+"0",""
+"0","# Convert Gender from 0/1 to String"
+"0","metadata <- metadata %>%"
+"0","  mutate(Gender_Male = ifelse(Gender_Male == 0,""Female"",""Male""))"

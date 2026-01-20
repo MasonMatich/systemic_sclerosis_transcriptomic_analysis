@@ -1,0 +1,8 @@
+"0","expressed <- rowSums(y$other$Detection < 0.05) >= 3"
+"0","y <- y[expressed,]"
+"0","dim(y)"
+"1","[1]"
+"1"," 27027"
+"1","    35"
+"1","
+"

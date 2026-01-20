@@ -1,0 +1,7 @@
+"0","boxplot(exprs_data, "
+"0","        main = ""Expression Distribution Across Samples"","
+"0","        ylab = ""Log2 Expression"","
+"0","        xlab = """","
+"0","        las = 2,"
+"0","        col = ifelse(metadata$Group == ""SSc"", ""lightcoral"", ""lightblue""),"
+"0","        cex.axis = 0.6)"

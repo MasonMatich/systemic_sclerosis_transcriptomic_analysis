@@ -1,0 +1,625 @@
+---
+title: "Differential Expression Analysis of Illumina HumanHT-12 V4.0 BeadChip Data"
+subtitle: "GSE58095: Systemic Sclerosis Skin Gene Expression Study"
+author: "Analysis Vignette using limma"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Overview
+
+This vignette demonstrates differential expression analysis of **Illumina HumanHT-12 V4.0 Expression BeadChip** data using the `limma` package. The dataset (GSE58095) contains skin biopsy samples from systemic sclerosis patients and healthy controls.
+
+## Data Processing Notes
+
+According to the GEO series information:
+- Raw data exported from **Illumina GenomeStudio** (no background subtraction)
+- Data were **log2 transformed**
+- **Quantile normalized** using BRB-Array Tools
+
+Since the data are already log2-transformed and quantile-normalized, we will:
+1. Load the pre-processed series matrix data
+2. Apply quality control
+3. Perform differential expression analysis using limma
+4. Extract and annotate results
+
+---
+
+# 1. Load Required Packages
+
+```{r load-packages}
+# Install packages if needed (uncomment to install)
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install(c("limma", "Biobase", "GEOquery"))
+
+library(limma)
+library(Biobase)
+library(GEOquery)
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+```
+
+---
+
+# 2. Load and Prepare Data
+
+## 2.1 Load Series Matrix from GEO
+
+```{r load-geo-data, eval=FALSE}
+# Download series matrix from GEO
+gset <- getGEO("GSE58095", GSEMatrix = TRUE, getGPL = FALSE)
+eset <- gset[[1]]
+
+# Extract expression data (already log2 transformed and normalized)
+exprs_data <- exprs(eset)
+pdata <- pData(eset)
+```
+
+## 2.2 Load Local Series Matrix (Alternative)
+
+If you have the series matrix file locally:
+
+```{r load-local-data}
+# Read the series matrix file
+# This example assumes you have the file locally
+series_matrix_file <- "GSE58095_series_matrix.txt"
+
+# For this vignette, we'll demonstrate with simulated structure
+# In practice, use read.ilmn() or read.table() depending on your file format
+```
+
+## 2.3 Load Metadata
+
+```{r load-metadata}
+# Load the metadata file we created
+metadata <- read.delim("GSE58095_metadata.tsv", stringsAsFactors = FALSE)
+
+# Display metadata structure
+head(metadata)
+cat("\nSample distribution:\n")
+table(metadata$Group, metadata$Affected)
+```
+
+---
+
+# 3. Quality Control
+
+## 3.1 Check Data Distribution
+
+```{r check-distribution, fig.width=10, fig.height=6}
+# Create boxplots to check normalization
+# Note: Data should already be normalized, but we verify here
+
+# Simulated expression data for demonstration
+# In practice, use: exprs_data <- exprs(eset)
+set.seed(42)
+n_genes <- 47323  # HumanHT-12 V4.0 has ~47,000 probes
+n_samples <- nrow(metadata)
+
+# Simulate normalized log2 expression data
+exprs_data <- matrix(
+  rnorm(n_genes * n_samples, mean = 8, sd = 2),
+  nrow = n_genes,
+  ncol = n_samples
+)
+rownames(exprs_data) <- paste0("ILMN_", 1:n_genes)
+colnames(exprs_data) <- metadata$GSM
+
+# Boxplot of expression values
+par(mar = c(8, 4, 2, 1))
+boxplot(exprs_data, 
+        main = "Expression Distribution Across Samples",
+        ylab = "Log2 Expression",
+        xlab = "",
+        las = 2,
+        col = ifelse(metadata$Group == "SSc", "lightcoral", "lightblue"),
+        cex.axis = 0.6)
+legend("topright", 
+       legend = c("SSc", "Control"),
+       fill = c("lightcoral", "lightblue"),
+       bty = "n")
+```
+
+## 3.2 Principal Component Analysis
+
+```{r pca-analysis, fig.width=10, fig.height=6}
+# Perform PCA
+pca_result <- prcomp(t(exprs_data), scale. = FALSE)
+
+# Create PCA plot
+pca_df <- data.frame(
+  PC1 = pca_result$x[, 1],
+  PC2 = pca_result$x[, 2],
+  Group = metadata$Group,
+  Affected = as.factor(metadata$Affected)
+)
+
+ggplot(pca_df, aes(x = PC1, y = PC2, color = Group, shape = Affected)) +
+  geom_point(size = 3, alpha = 0.7) +
+  theme_bw() +
+  labs(title = "PCA Plot: Sample Clustering",
+       x = paste0("PC1 (", round(summary(pca_result)$importance[2, 1] * 100, 1), "%)"),
+       y = paste0("PC2 (", round(summary(pca_result)$importance[2, 2] * 100, 1), "%)")) +
+  scale_color_manual(values = c("SSc" = "#E74C3C", "Control" = "#3498DB")) +
+  theme(legend.position = "right")
+```
+
+## 3.3 Sample Correlation Heatmap
+
+```{r correlation-heatmap, fig.width=10, fig.height=9}
+# Calculate sample correlations
+sample_cor <- cor(exprs_data, method = "pearson")
+
+# Create annotation for heatmap
+annotation_col <- data.frame(
+  Group = metadata$Group,
+  Affected = ifelse(is.na(metadata$Affected), "Control",
+                   ifelse(metadata$Affected == 1, "Affected", "Unaffected"))
+)
+rownames(annotation_col) <- colnames(exprs_data)
+
+# Define colors
+ann_colors <- list(
+  Group = c(SSc = "#E74C3C", Control = "#3498DB"),
+  Affected = c(Affected = "#E74C3C", Unaffected = "#F39C12", Control = "#3498DB")
+)
+
+# Plot heatmap
+pheatmap(sample_cor,
+         annotation_col = annotation_col,
+         annotation_colors = ann_colors,
+         show_rownames = FALSE,
+         show_colnames = FALSE,
+         main = "Sample-to-Sample Correlation Heatmap",
+         color = colorRampPalette(c("blue", "white", "red"))(100))
+```
+
+---
+
+# 4. Differential Expression Analysis with limma
+
+## 4.1 Design Matrix Setup
+
+### Analysis 1: Affected vs Unaffected SSc Samples
+
+```{r design-affected-unaffected}
+# Filter to SSc samples only
+ssc_samples <- metadata$Group == "SSc" & !is.na(metadata$Affected)
+ssc_metadata <- metadata[ssc_samples, ]
+ssc_exprs <- exprs_data[, ssc_samples]
+
+# Create design matrix
+affected_status <- factor(ssc_metadata$Affected, levels = c(0, 1))
+design_affected <- model.matrix(~ affected_status)
+colnames(design_affected) <- c("Intercept", "AffectedVsUnaffected")
+
+head(design_affected)
+```
+
+### Analysis 2: SSc vs Control
+
+```{r design-ssc-control}
+# Create design matrix for SSc vs Control
+group <- factor(metadata$Group, levels = c("Control", "SSc"))
+design_ssc_control <- model.matrix(~ group)
+```
+
+## 4.2 Fit Linear Model
+
+The **limma** pipeline for single-channel arrays:
+
+1. `lmFit()` - Fit linear model for each gene
+2. `eBayes()` - Compute moderated t-statistics
+3. `topTable()` - Extract top differentially expressed genes
+
+### Affected vs Unaffected Analysis
+
+```{r limma-affected-unaffected}
+# Fit linear model
+fit_affected <- lmFit(ssc_exprs, design_affected)
+
+# Apply empirical Bayes moderation
+fit_affected <- eBayes(fit_affected)
+
+# Check the model
+cat("Coefficients in the model:\n")
+colnames(coef(fit_affected))
+
+# Number of differentially expressed genes at different thresholds
+cat("\nNumber of DE genes (p < 0.05):", 
+    sum(fit_affected$p.value[, "AffectedVsUnaffected"] < 0.05), "\n")
+cat("Number of DE genes (adj.p < 0.05):", 
+    sum(p.adjust(fit_affected$p.value[, "AffectedVsUnaffected"], method = "BH") < 0.05), "\n")
+```
+
+### SSc vs Control Analysis
+
+```{r limma-ssc-control}
+# Fit linear model
+fit_ssc_control <- lmFit(exprs_data, design_ssc_control)
+
+# Apply empirical Bayes moderation
+fit_ssc_control <- eBayes(fit_ssc_control)
+
+# Check the model
+cat("Coefficients in the model:\n")
+colnames(coef(fit_ssc_control))
+
+# Number of differentially expressed genes
+cat("\nNumber of DE genes (p < 0.05):", 
+    sum(fit_ssc_control$p.value[, "SScVsControl"] < 0.05), "\n")
+cat("Number of DE genes (adj.p < 0.05):", 
+    sum(p.adjust(fit_ssc_control$p.value[, "SScVsControl"], method = "BH") < 0.05), "\n")
+```
+
+---
+
+# 5. Extract Results
+
+## 5.1 Top Differentially Expressed Genes
+
+### Affected vs Unaffected
+
+```{r toptable-affected}
+# Extract top genes
+results_affected <- topTable(
+  fit_affected,
+  coef = "AffectedVsUnaffected",
+  number = Inf,
+  adjust.method = "BH",
+  sort.by = "P"
+)
+
+# Add gene annotations (in practice, map to gene symbols)
+results_affected$ProbeID <- rownames(results_affected)
+
+# Display top 20 genes
+head(results_affected, 20)
+
+# Summary of results
+cat("\nSummary of differential expression:\n")
+summary(decideTests(fit_affected, p.value = 0.05, adjust.method = "BH"))
+```
+
+### SSc vs Control
+
+```{r toptable-ssc-control}
+# Extract top genes
+results_ssc_control <- topTable(
+  fit_ssc_control,
+  coef = "SScVsControl",
+  number = Inf,
+  adjust.method = "BH",
+  sort.by = "P"
+)
+
+results_ssc_control$ProbeID <- rownames(results_ssc_control)
+
+# Display top 20 genes
+head(results_ssc_control, 20)
+
+# Summary
+cat("\nSummary of differential expression:\n")
+summary(decideTests(fit_ssc_control, p.value = 0.05, adjust.method = "BH"))
+```
+
+## 5.2 Filter Significant Genes
+
+```{r filter-significant}
+# Define significance thresholds
+p_threshold <- 0.05
+fc_threshold <- 1.5  # 1.5-fold change (log2FC = 0.585)
+
+# Filter affected vs unaffected
+sig_affected <- results_affected[
+  results_affected$adj.P.Val < p_threshold & 
+  abs(results_affected$logFC) > log2(fc_threshold),
+]
+
+cat("Significant genes (Affected vs Unaffected):", nrow(sig_affected), "\n")
+cat("  Up-regulated:", sum(sig_affected$logFC > 0), "\n")
+cat("  Down-regulated:", sum(sig_affected$logFC < 0), "\n\n")
+
+# Filter SSc vs Control
+sig_ssc_control <- results_ssc_control[
+  results_ssc_control$adj.P.Val < p_threshold & 
+  abs(results_ssc_control$logFC) > log2(fc_threshold),
+]
+
+cat("Significant genes (SSc vs Control):", nrow(sig_ssc_control), "\n")
+cat("  Up-regulated:", sum(sig_ssc_control$logFC > 0), "\n")
+cat("  Down-regulated:", sum(sig_ssc_control$logFC < 0), "\n")
+```
+
+---
+
+# 6. Visualization
+
+## 6.1 Volcano Plot
+
+```{r volcano-plot, fig.width=10, fig.height=6}
+# Volcano plot function
+create_volcano_plot <- function(results, title, fc_threshold = 1.5, p_threshold = 0.05) {
+  results$Significant <- ifelse(
+    results$adj.P.Val < p_threshold & abs(results$logFC) > log2(fc_threshold),
+    ifelse(results$logFC > 0, "Up", "Down"),
+    "NS"
+  )
+  
+  ggplot(results, aes(x = logFC, y = -log10(P.Value), color = Significant)) +
+    geom_point(alpha = 0.5, size = 1) +
+    scale_color_manual(values = c("Up" = "#E74C3C", "Down" = "#3498DB", "NS" = "grey70")) +
+    geom_vline(xintercept = c(-log2(fc_threshold), log2(fc_threshold)), 
+               linetype = "dashed", color = "grey30") +
+    geom_hline(yintercept = -log10(p_threshold), 
+               linetype = "dashed", color = "grey30") +
+    theme_bw() +
+    labs(title = title,
+         x = "Log2 Fold Change",
+         y = "-Log10 P-value") +
+    theme(legend.position = "right")
+}
+
+# Affected vs Unaffected
+create_volcano_plot(results_affected, 
+                    "Volcano Plot: Affected vs Unaffected SSc")
+```
+
+```{r volcano-plot-ssc, fig.width=10, fig.height=6}
+# SSc vs Control
+create_volcano_plot(results_ssc_control,
+                    "Volcano Plot: SSc vs Control")
+```
+
+## 6.2 MA Plot
+
+```{r ma-plot, fig.width=10, fig.height=6}
+# MA plot for Affected vs Unaffected
+limma::plotMA(fit_affected, coef = "AffectedVsUnaffected",
+              main = "MA Plot: Affected vs Unaffected SSc",
+              status = decideTests(fit_affected)[, "AffectedVsUnaffected"],
+              values = c(-1, 1),
+              col = c("blue", "grey", "red"))
+abline(h = 0, col = "grey", lty = 2)
+```
+
+## 6.3 Heatmap of Top Genes
+
+```{r heatmap-top-genes, fig.width=10, fig.height=12}
+# Select top 50 genes by adjusted p-value
+top_genes <- rownames(results_affected)[1:50]
+top_exprs <- ssc_exprs[top_genes, ]
+
+# Z-score transformation for visualization
+top_exprs_scaled <- t(scale(t(top_exprs)))
+
+# Annotation
+annotation_col <- data.frame(
+  Affected = ifelse(ssc_metadata$Affected == 1, "Affected", "Unaffected"),
+  Disease_Subtype = ssc_metadata$Disease_Subtype,
+  ILD = ssc_metadata$ILD_Status
+)
+rownames(annotation_col) <- colnames(top_exprs)
+
+# Plot
+pheatmap(top_exprs_scaled,
+         annotation_col = annotation_col,
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         main = "Top 50 DE Genes: Affected vs Unaffected",
+         color = colorRampPalette(c("blue", "white", "red"))(100),
+         fontsize_row = 6)
+```
+
+---
+
+# 7. Advanced: Adjusting for Covariates
+
+If you need to adjust for covariates (e.g., gender, age, batch):
+
+```{r adjust-covariates}
+# Example: Adjusting for gender and ILD status
+design_adjusted <- model.matrix(
+  ~ affected_status + ssc_metadata$Gender_Male + ssc_metadata$ILD_Status
+)
+
+# Fit model with covariates
+fit_adjusted <- lmFit(ssc_exprs, design_adjusted)
+fit_adjusted <- eBayes(fit_adjusted)
+
+# The coefficient of interest is still the affected status
+results_adjusted <- topTable(
+  fit_adjusted,
+  coef = "affected_status1",
+  number = Inf,
+  adjust.method = "BH"
+)
+
+head(results_adjusted, 10)
+```
+
+---
+
+# 8. Gene Set Testing with CAMERA
+
+```{r camera-analysis, eval=FALSE}
+# Example gene set testing using CAMERA
+# Requires gene sets (e.g., from MSigDB)
+
+# Load gene sets (example)
+# gene_sets <- readRDS("gene_sets.rds")
+
+# Run CAMERA
+# camera_results <- camera(
+#   ssc_exprs,
+#   index = gene_sets,
+#   design = design_affected,
+#   contrast = "AffectedVsUnaffected"
+# )
+#
+# head(camera_results)
+```
+
+---
+
+# 9. Export Results
+
+```{r export-results}
+# Export significant genes to CSV
+write.csv(sig_affected, 
+          "GSE58095_affected_vs_unaffected_sig_genes.csv",
+          row.names = FALSE)
+
+write.csv(sig_ssc_control,
+          "GSE58095_ssc_vs_control_sig_genes.csv", 
+          row.names = FALSE)
+
+# Export all results
+write.csv(results_affected,
+          "GSE58095_affected_vs_unaffected_all_results.csv",
+          row.names = FALSE)
+
+write.csv(results_ssc_control,
+          "GSE58095_ssc_vs_control_all_results.csv",
+          row.names = FALSE)
+
+cat("Results exported successfully!\n")
+```
+
+---
+
+# 10. Key limma Functions Summary
+
+## Core Functions for Single-Channel Arrays
+
+| Function | Purpose |
+|----------|---------|
+| `read.ilmn()` | Read Illumina data from GenomeStudio |
+| `neqc()` | Normalization using negative control probes |
+| `normalizeBetweenArrays()` | Between-array normalization |
+| `lmFit()` | Fit linear model to expression data |
+| `eBayes()` | Compute moderated t-statistics |
+| `topTable()` | Extract top differentially expressed genes |
+| `decideTests()` | Classify genes as up/down/unchanged |
+| `voom()` | For count data transformation (RNA-seq) |
+
+## Quality Control Functions
+
+| Function | Purpose |
+|----------|---------|
+| `plotMDS()` | Multidimensional scaling plot |
+| `plotMA()` | MA plot for quality assessment |
+| `plotDensities()` | Plot density distributions |
+| `arrayWeights()` | Estimate array quality weights |
+
+## Annotation and Results Functions
+
+| Function | Purpose |
+|----------|---------|
+| `topTable()` | Extract ranked gene list |
+| `topTableF()` | For F-statistics (multiple contrasts) |
+| `write.fit()` | Write results to file |
+| `volcanoplot()` | Create volcano plot |
+
+---
+
+# 11. Important Notes for Pre-Normalized Data
+
+Since GSE58095 data are **already log2-transformed and quantile-normalized**:
+
+1. **Skip normalization steps** - Do not re-normalize
+2. **Direct to linear modeling** - Proceed directly to `lmFit()`
+3. **No background correction** - Already done (or skipped intentionally)
+4. **Check for batch effects** - Use PCA/MDS to identify potential confounders
+5. **Consider duplicate correlation** - If technical replicates exist, use `duplicateCorrelation()`
+
+## When to Use Different Normalization Methods
+
+- **neqc()**: For raw Illumina data with detection p-values and control probes
+- **quantile normalization**: For making distributions identical across arrays (already done here)
+- **robust spline normalization**: Alternative to quantile normalization
+- **No normalization**: When data are already normalized (this dataset)
+
+---
+
+# 12. Session Information
+
+```{r session-info}
+sessionInfo()
+```
+
+---
+
+# References
+
+1. Ritchie ME, et al. (2015). limma powers differential expression analyses for RNA-sequencing and microarray studies. *Nucleic Acids Research* 43(7):e47.
+
+2. Shi W, Oshlack A, Smyth GK (2010). Optimizing the noise versus bias trade-off for Illumina whole genome expression BeadChips. *Nucleic Acids Research* 38(22):e204.
+
+3. Dunning MJ, et al. (2007). beadarray: R classes and methods for Illumina bead-based data. *Bioinformatics* 23(16):2183-2184.
+
+4. Smyth GK (2004). Linear models and empirical Bayes methods for assessing differential expression in microarray experiments. *Statistical Applications in Genetics and Molecular Biology* 3:Article 3.
+
+---
+
+# Appendix: Complete Analysis Script
+
+```{r complete-script, eval=FALSE}
+# Complete analysis workflow for GSE58095
+
+# 1. Load packages
+library(limma)
+library(GEOquery)
+
+# 2. Load data
+gset <- getGEO("GSE58095", GSEMatrix = TRUE)
+eset <- gset[[1]]
+exprs_data <- exprs(eset)  # Already log2 and normalized
+
+# 3. Load metadata
+metadata <- read.delim("GSE58095_metadata.tsv")
+
+# 4. Filter to SSc affected vs unaffected
+ssc_samples <- metadata$Group == "SSc" & !is.na(metadata$Affected)
+ssc_metadata <- metadata[ssc_samples, ]
+ssc_exprs <- exprs_data[, ssc_samples]
+
+# 5. Design matrix
+affected <- factor(ssc_metadata$Affected, levels = c(0, 1))
+design <- model.matrix(~ affected)
+
+# 6. Linear modeling
+fit <- lmFit(ssc_exprs, design)
+fit <- eBayes(fit)
+
+# 7. Extract results
+results <- topTable(fit, coef = 2, number = Inf, adjust.method = "BH")
+
+# 8. Filter significant genes
+sig_genes <- results[results$adj.P.Val < 0.05 & abs(results$logFC) > log2(1.5), ]
+
+# 9. Export
+write.csv(sig_genes, "significant_genes.csv", row.names = FALSE)
+
+# 10. Visualize
+volcanoplot(fit, coef = 2, highlight = 10)
+plotMA(fit, coef = 2)
+```
+
+---
+
+**End of Vignette**

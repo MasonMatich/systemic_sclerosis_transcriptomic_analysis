@@ -1,0 +1,5 @@
+"0","probes <- rownames(exprs_data)"
+"0",""
+"0","mapped_genes <- platform_annotation[match(probes, platform_annotation$ID), c(""ID"", ""Symbol"", ""Entrez_Gene_ID"", ""Definition"")]"
+"0",""
+"0","fData(eset) <- mapped_genes"

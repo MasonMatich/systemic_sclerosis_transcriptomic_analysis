@@ -1,0 +1,2 @@
+"0","# Plot leading dimensions against Sex"
+"0","plotMDS(y, labels = metadata$Gender_Male)"

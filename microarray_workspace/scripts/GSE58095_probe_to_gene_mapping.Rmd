@@ -1,0 +1,423 @@
+---
+title: "Mapping Illumina Probes to Gene Symbols for GSE58095"
+subtitle: "Complete Guide with Multiple Methods"
+author: "Gene Annotation Workflow"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Overview
+
+This guide shows how to map Illumina HumanHT-12 V4.0 probe IDs (like `ILMN_1762337`) to gene symbols for GSE58095 data. This is equivalent to the E. coli example but for human data.
+
+---
+
+# Method 1: Using GPL10558 Platform Annotation (EASIEST & RECOMMENDED)
+
+This is the **simplest and most reliable** method for GSE58095 data.
+
+```{r method1-gpl}
+library(GEOquery)
+library(Biobase)
+
+# Download the GPL10558 platform annotation
+# (Illumina HumanHT-12 V4.0 expression beadchip)
+gpl <- getGEO("GPL10558", destdir = ".")
+
+# Extract the annotation table
+platform_annotation <- Table(gpl)
+
+# View available columns
+colnames(platform_annotation)
+
+# View first few rows
+head(platform_annotation[, c("ID", "Symbol", "Entrez_Gene_ID", 
+                             "Chromosome", "Definition")])
+
+# Key columns:
+# - ID: Illumina probe ID (ILMN_#######)
+# - Symbol: Official gene symbol
+# - Entrez_Gene_ID: NCBI Entrez Gene ID
+# - Chromosome: Chromosomal location
+# - Definition: Gene description
+# - Ontology_Component, Ontology_Process, Ontology_Function: GO terms
+
+# Example: Map probe IDs to genes
+example_probes <- c("ILMN_1762337", "ILMN_1736007", "ILMN_1806310")
+mapped_genes <- platform_annotation[
+  match(example_probes, platform_annotation$ID),
+  c("ID", "Symbol", "Entrez_Gene_ID", "Definition")
+]
+print(mapped_genes)
+```
+
+## Apply to Your Expression Data
+
+```{r apply-method1}
+# If you have an ExpressionSet
+# gset <- getGEO("GSE58095", GSEMatrix = TRUE)
+# eset <- gset[[1]]
+
+# Get probe IDs from your data
+# probe_ids <- featureNames(eset)
+# OR if you have a matrix:
+# probe_ids <- rownames(exprs_data)
+
+# Example with simulated probe IDs
+set.seed(42)
+probe_ids <- paste0("ILMN_", sample(1000000:2000000, 100))
+
+# Map to gene annotations
+gene_annotation <- platform_annotation[
+  match(probe_ids, platform_annotation$ID),
+]
+
+# Select key columns
+gene_annotation <- gene_annotation[, c("ID", "Symbol", "Entrez_Gene_ID", 
+                                       "Chromosome", "Definition",
+                                       "Probe_Id", "Array_Address_Id")]
+
+# Add to ExpressionSet
+# fData(eset) <- gene_annotation
+
+# View results
+head(gene_annotation)
+
+# Check mapping statistics
+cat("\nMapping statistics:\n")
+cat("Total probes:", length(probe_ids), "\n")
+cat("Mapped to genes:", sum(!is.na(gene_annotation$Symbol)), "\n")
+cat("Unmapped probes:", sum(is.na(gene_annotation$Symbol)), "\n")
+```
+
+---
+
+# Method 2: Using illuminaHumanv4.db Package
+
+This method uses the Bioconductor annotation package specifically for HumanHT-12 V4.
+
+```{r method2-db, eval=FALSE}
+# Install if needed
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("illuminaHumanv4.db")
+
+library(illuminaHumanv4.db)
+library(AnnotationDbi)
+
+# View available columns
+columns(illuminaHumanv4.db)
+# Returns: "PROBEID", "SYMBOL", "GENENAME", "ENTREZID", "ENSEMBL", 
+#          "REFSEQ", "CHR", "CHRLOC", "CHRLOCEND", etc.
+
+# Map probe IDs to gene information
+probe_ids <- c("ILMN_1762337", "ILMN_1736007", "ILMN_1806310")
+
+gene_info <- select(
+  illuminaHumanv4.db,
+  keys = probe_ids,
+  columns = c("SYMBOL", "GENENAME", "ENTREZID", "ENSEMBL", "CHR"),
+  keytype = "PROBEID"
+)
+
+print(gene_info)
+
+# For all probes in your data
+# probe_ids <- featureNames(eset)
+gene_annotation <- select(
+  illuminaHumanv4.db,
+  keys = probe_ids,
+  columns = c("PROBEID", "SYMBOL", "GENENAME", "ENTREZID", 
+              "ENSEMBL", "CHR", "CHRLOC"),
+  keytype = "PROBEID"
+)
+
+# Add to ExpressionSet
+# Note: Some probes may map to multiple genes, creating duplicate rows
+# You may need to handle this:
+gene_annotation_unique <- gene_annotation[
+  !duplicated(gene_annotation$PROBEID),
+]
+
+# fData(eset) <- gene_annotation_unique[
+#   match(featureNames(eset), gene_annotation_unique$PROBEID),
+# ]
+```
+
+---
+
+# Method 3: Using NCBI gene_info File (Equivalent to E. coli Example)
+
+This is the direct equivalent to your E. coli example, but for human data.
+
+```{r method3-ncbi, eval=FALSE}
+library(limma)
+
+# Step 1: Download human gene_info file from NCBI
+# This is the human equivalent of the E. coli gene_info file
+download.file(
+  url = "https://ftp.ncbi.nih.gov/gene/DATA/GENE_INFO/Mammalia/Homo_sapiens.gene_info.gz",
+  destfile = "Homo_sapiens.gene_info.gz",
+  mode = "wb"
+)
+
+# Step 2: Prepare probe IDs
+# Your Illumina probe IDs
+probe_ids <- featureNames(eset)  # or rownames(exprs_data)
+
+# Step 3: Use alias2SymbolUsingNCBI (just like the E. coli example!)
+gene_annotation <- alias2SymbolUsingNCBI(
+  alias = probe_ids,
+  gene.info.file = "Homo_sapiens.gene_info.gz",
+  required = c("GeneID", "Symbol", "type_of_gene")
+)
+
+# This returns a data frame with:
+# - GeneID: NCBI Gene ID
+# - Symbol: Official gene symbol  
+# - type_of_gene: Gene type (protein-coding, ncRNA, etc.)
+
+# Step 4: Add to ExpressionSet
+fData(eset) <- gene_annotation
+
+# View results
+head(gene_annotation)
+```
+
+### Important Notes for alias2SymbolUsingNCBI:
+
+1. The function looks for your probe IDs in the "Synonyms" column of gene_info
+2. Some Illumina probes may not map (they might be control probes or deprecated)
+3. The `required` parameter specifies which columns you want to keep
+
+---
+
+# Method 4: Using biomaRt (Most Up-to-Date)
+
+For the most current annotations directly from Ensembl.
+
+```{r method4-biomart, eval=FALSE}
+library(biomaRt)
+
+# Connect to Ensembl
+ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+
+# List available filters (to see available options)
+# head(listFilters(ensembl))
+
+# Get probe IDs
+probe_ids <- c("ILMN_1762337", "ILMN_1736007", "ILMN_1806310")
+
+# Query Ensembl BioMart
+gene_annotation <- getBM(
+  attributes = c(
+    'illumina_humanht_12_v4',  # Illumina probe ID
+    'hgnc_symbol',              # Gene symbol
+    'entrezgene_id',            # Entrez ID
+    'ensembl_gene_id',          # Ensembl gene ID
+    'chromosome_name',          # Chromosome
+    'gene_biotype',             # Gene type
+    'description'               # Gene description
+  ),
+  filters = 'illumina_humanht_12_v4',
+  values = probe_ids,
+  mart = ensembl
+)
+
+print(gene_annotation)
+
+# For all probes
+# probe_ids <- featureNames(eset)
+# gene_annotation <- getBM(...)
+# 
+# # Match back to original probe order
+# gene_annotation_sorted <- gene_annotation[
+#   match(probe_ids, gene_annotation$illumina_humanht_12_v4),
+# ]
+```
+
+---
+
+# Complete Working Example for GSE58095
+
+Here's a complete workflow combining data loading and annotation:
+
+```{r complete-example, eval=FALSE}
+library(GEOquery)
+library(limma)
+library(Biobase)
+
+# 1. Load GSE58095 data
+gset <- getGEO("GSE58095", GSEMatrix = TRUE, getGPL = FALSE)
+eset <- gset[[1]]
+
+# 2. Get expression data (already log2 and normalized)
+exprs_data <- exprs(eset)
+probe_ids <- rownames(exprs_data)
+
+# 3. Download platform annotation
+gpl <- getGEO("GPL10558", destdir = ".")
+platform_annotation <- Table(gpl)
+
+# 4. Map probes to genes
+gene_annotation <- platform_annotation[
+  match(probe_ids, platform_annotation$ID),
+  c("ID", "Symbol", "Entrez_Gene_ID", "Chromosome", 
+    "Definition", "Ontology_Process", "Ontology_Function")
+]
+
+# 5. Add to ExpressionSet
+fData(eset) <- gene_annotation
+
+# 6. Verify the annotation
+head(fData(eset))
+
+# 7. Now you can run differential expression
+metadata <- read.delim("GSE58095_metadata.tsv")
+
+# Filter to SSc samples
+ssc_samples <- metadata$Group == "SSc" & !is.na(metadata$Affected)
+ssc_eset <- eset[, ssc_samples]
+ssc_metadata <- metadata[ssc_samples, ]
+
+# Design matrix
+affected <- factor(ssc_metadata$Affected, levels = c(0, 1))
+design <- model.matrix(~ affected)
+
+# Fit model
+fit <- lmFit(ssc_eset, design)
+fit <- eBayes(fit)
+
+# Get results with gene symbols!
+results <- topTable(fit, coef = 2, number = 100)
+# The results now include gene symbols from fData
+
+print(results)
+```
+
+---
+
+# Handling Multiple Probes per Gene
+
+Some genes have multiple probes. Here's how to handle them:
+
+```{r handle-duplicates}
+# After annotation, you may have multiple probes per gene
+
+# Option 1: Keep all probes (most common)
+# Do nothing - each probe represents a different measurement
+
+# Option 2: Average expression across probes for the same gene
+# Use limma's avereps() function
+# averaged_exprs <- avereps(exprs_data, ID = gene_annotation$Symbol)
+
+# Option 3: Select the probe with highest variance
+# select_max_var <- function(exprs_data, gene_symbols) {
+#   gene_var <- rowVars(exprs_data)
+#   keep <- !duplicated(gene_symbols) | 
+#           ave(gene_var, gene_symbols, FUN = function(x) x == max(x)) == 1
+#   return(exprs_data[keep, ])
+# }
+```
+
+---
+
+# Validation: Cross-Reference with Your Proteomic Data
+
+```{r validate-proteins}
+# Your proteomic protein list
+proteins_of_interest <- c("ACTA2", "TPM1", "TPM2", "ITGA5", "ITGB1", 
+                          "CD44", "ICAM1", "CLU", "C3", "GFAP")
+
+# Find probes for these genes
+platform_annotation <- Table(getGEO("GPL10558", destdir = "."))
+
+matched_probes <- platform_annotation[
+  platform_annotation$Symbol %in% proteins_of_interest,
+  c("ID", "Symbol", "Definition")
+]
+
+print(matched_probes)
+
+# Check how many probes per gene
+table(matched_probes$Symbol)
+```
+
+---
+
+# Summary Table: Which Method to Use?
+
+| Method | Pros | Cons | Best For |
+|--------|------|------|----------|
+| **GPL10558** | Easy, complete, includes metadata | Static (not updated) | Most users, reproducibility |
+| **illuminaHumanv4.db** | Well-maintained, Bioconductor | Some probes may be missing | Standard analysis |
+| **NCBI gene_info** | Direct NCBI source | Requires download | Matching E. coli workflow |
+| **biomaRt** | Most current | Requires internet, can be slow | Need latest annotations |
+
+## My Recommendation
+
+For GSE58095, use **Method 1 (GPL10558)** because:
+1. ✅ It's the official platform annotation for your array
+2. ✅ Guaranteed to have all probe IDs
+3. ✅ Includes additional useful information (GO terms, etc.)
+4. ✅ No internet required after initial download
+5. ✅ Reproducible
+
+---
+
+# Export Annotated Results
+
+```{r export-annotated}
+# After running differential expression
+# results <- topTable(fit, coef = 2, number = Inf)
+
+# The results will automatically include gene symbols if you've set fData(eset)
+
+# Export with full annotation
+# results_annotated <- cbind(
+#   ProbeID = rownames(results),
+#   results,
+#   gene_annotation[match(rownames(results), gene_annotation$ID), 
+#                   c("Symbol", "Definition", "Chromosome")]
+# )
+# 
+# write.csv(results_annotated, 
+#           "GSE58095_DE_results_annotated.csv", 
+#           row.names = FALSE)
+```
+
+---
+
+# Quick Reference Code
+
+```{r quick-reference, eval=FALSE}
+# === QUICK START: Map Illumina Probes to Genes ===
+
+library(GEOquery)
+
+# 1. Get platform annotation
+gpl <- getGEO("GPL10558", destdir = ".")
+annot <- Table(gpl)
+
+# 2. Map your probe IDs
+probe_ids <- rownames(your_expression_matrix)
+gene_map <- annot[match(probe_ids, annot$ID), 
+                  c("ID", "Symbol", "Entrez_Gene_ID", "Definition")]
+
+# 3. Add to ExpressionSet (if using one)
+fData(eset) <- gene_map
+
+# Done! Your probes are now annotated.
+```
+
+---
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```
