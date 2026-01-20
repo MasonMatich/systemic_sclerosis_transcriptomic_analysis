@@ -44,8 +44,12 @@ If sex has a significant influence in disease manifestation in Systemic Sclerosi
 **Platform:** Illumina HumanHT-12 V4.0 expression beadchip  
 **Sample Type:** Skin biopsies (affected skin for SSc samples)  
 **Cohort Size:** 35 individuals
-- 17 Healthy controls
-- 18 Diffuse SSc patients (some with Interstitial Lung Disease - representing more severe cases)
+**Disease Characteristics:** Diffuse SSc patients (some with Interstitial Lung Disease - representing more severe cases)
+
+| Group | Male | Female |
+|-------|------|--------|
+| Healthy | 2 | 15 |
+| SSc | 8 | 10 |
 
 **Sex Distribution:**
 - Limited male controls (n=2) presented a statistical challenge for interaction analysis
