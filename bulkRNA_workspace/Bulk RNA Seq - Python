@@ -1,2 +1,345 @@
 !pip install pydeseq2
 !pip install mygene
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pydeseq2.dds import DeseqDataSet
+from pydeseq2.ds import DeseqStats
+from matplotlib.patches import Patch
+
+# ===============================
+# FILE PATHS
+# ===============================
+series_matrix = "GSE130955_series_matrix.txt"
+counts_file = "GSE130955_raw_counts_GRCh38.p13_NCBI.tsv"
+
+# ===============================
+# 1. PARSE METADATA
+# ===============================
+accessions = []
+characteristics_raw = []
+
+with open(series_matrix, "r") as f:
+    for line in f:
+        if line.startswith("!Sample_geo_accession"):
+            accessions = [x.strip('"') for x in line.strip().split("\t")[1:]]
+        elif line.startswith("!Sample_characteristics_ch1"):
+            row = [x.strip('"') for x in line.strip().split("\t")[1:]]
+            characteristics_raw.append(row)
+        elif line.startswith("!series_matrix_table_begin"):
+            break
+
+records = []
+for i, acc in enumerate(accessions):
+    record = {"Patient_ID": acc}
+    for char_row in characteristics_raw:
+        if ":" in char_row[i]:
+            key, val = char_row[i].split(":", 1)
+            record[key.strip().lower()] = val.strip()
+    records.append(record)
+
+df = pd.DataFrame(records)
+
+# Fix Column Names
+sex_key = [c for c in df.columns if 'sex' in c][0]
+df["Sex"] = df[sex_key].map({"0": "Female", "1": "Male"})
+df["Diagnosis"] = df["diagnosis"].replace({"SSc patient": "SSc", "healthy control": "Healthy Control"})
+
+# ===============================
+# 2. LOAD AND ALIGN COUNTS
+# ===============================
+counts = pd.read_csv(counts_file, sep="\t", index_col=0).T
+counts.index = counts.index.astype(str)
+counts = counts.astype(int)
+
+# Align samples
+common_samples = list(set(df["Patient_ID"]) & set(counts.index))
+df = df.set_index("Patient_ID").loc[common_samples]
+counts = counts.loc[common_samples]
+
+# Gene filtering
+counts = counts.loc[:, counts.sum(axis=0) >= 10]
+
+# ===============================
+# 2B. CONVERT ENTREZ TO GENE SYMBOLS
+# ===============================
+import mygene
+
+print("\nConverting Entrez IDs to Gene Symbols...")
+mg = mygene.MyGeneInfo()
+
+# Get Entrez IDs from column names
+entrez_ids = counts.columns.tolist()
+
+# Query in batches for efficiency
+gene_info = mg.querymany(entrez_ids, scopes='entrezgene', fields='symbol', species='human', returnall=True)
+
+# Create mapping dictionary
+entrez_to_symbol = {}
+for item in gene_info['out']:
+    if 'symbol' in item and 'query' in item:
+        entrez_to_symbol[str(item['query'])] = item['symbol']
+    elif 'query' in item:
+        # Keep Entrez ID if no symbol found
+        entrez_to_symbol[str(item['query'])] = str(item['query'])
+
+# Rename columns
+counts.columns = [entrez_to_symbol.get(str(col), str(col)) for col in counts.columns]
+
+# Make column names unique by appending a suffix if duplicates exist
+# This addresses the ValueError: cannot reindex on an axis with duplicate labels
+cols = pd.Series(counts.columns)
+for dup in cols[cols.duplicated()].unique():
+    cols[cols[cols == dup].index.values.tolist()] = [dup + '_' + str(i) if i != 0 else dup + '_0' for i in range(sum(cols == dup))]
+counts.columns = cols
+
+print(f"Converted {len([v for k, v in entrez_to_symbol.items() if k != v])} Entrez IDs to gene symbols")
+print(f"Kept {len([v for k, v in entrez_to_symbol.items() if k == v])} as Entrez IDs (no symbol found)")
+
+# ===============================
+# 3. SPLIT DATA
+# ===============================
+ssc_meta = df[df["Diagnosis"] == "SSc"].copy()
+hc_meta  = df[df["Diagnosis"] == "Healthy Control"].copy()
+
+ssc_meta["Sex"] = ssc_meta["Sex"].astype("category")
+hc_meta["Sex"]  = hc_meta["Sex"].astype("category")
+
+ssc_counts = counts.loc[ssc_meta.index]
+hc_counts  = counts.loc[hc_meta.index]
+
+print(f"SSc samples: {len(ssc_meta)} (Male: {sum(ssc_meta['Sex']=='Male')}, Female: {sum(ssc_meta['Sex']=='Female')})")
+print(f"Healthy samples: {len(hc_meta)} (Male: {sum(hc_meta['Sex']=='Male')}, Female: {sum(hc_meta['Sex']=='Female')})")
+
+# ===============================
+# 4. DESEQ2 RUNS
+# ===============================
+print("\nRunning DESeq2 on Healthy Controls...")
+dds_hc = DeseqDataSet(counts=hc_counts, metadata=hc_meta, design_factors="Sex")
+dds_hc.deseq2()
+res_hc = DeseqStats(dds_hc, contrast=["Sex", "Male", "Female"])
+res_hc.summary()
+res_hc_df = res_hc.results_df
+
+print("\nRunning DESeq2 on SSc Patients...")
+dds_ssc = DeseqDataSet(counts=ssc_counts, metadata=ssc_meta, design_factors="Sex")
+dds_ssc.deseq2()
+res_ssc = DeseqStats(dds_ssc, contrast=["Sex", "Male", "Female"])
+res_ssc.summary()
+res_ssc_df = res_ssc.results_df
+
+# ===============================
+# 5. SUBTRACTION FILTER
+# ===============================
+# Remove genes significantly different in healthy males vs females
+baseline_sex_genes = res_hc_df[res_hc_df["padj"] < 0.05].index
+print(f"\nBaseline sex-differential genes in healthy controls: {len(baseline_sex_genes)}")
+
+res_ssc_filtered = res_ssc_df.drop(index=baseline_sex_genes, errors="ignore")
+print(f"Disease-specific sex-differential genes analyzed: {len(res_ssc_filtered)}")
+
+sig_disease_genes = res_ssc_filtered[res_ssc_filtered["padj"] < 0.05]
+print(f"Significant disease-specific sex-differential genes: {len(sig_disease_genes)}")
+
+
+
+
+
+#=============================
+#
+#===============================
+sex_chromosome_genes = [
+    # Y chromosome genes
+    'DDX3Y', 'UTY', 'KDM5D', 'RPS4Y1', 'EIF1AY', 'USP9Y', 'ZFY', 'TMSB4Y',
+    'NLGN4Y', 'PCDH11Y', 'TBL1Y', 'PRKY', 'TXLNGY', 'RPS4Y2', 'CYorf15A',
+    'CYorf15B', 'BPY2', 'DAZ1', 'DAZ2', 'DAZ3', 'DAZ4', 'RBMY1A1', 'PRY',
+    'CDY1', 'HSFY1', 'HSFY2', 'VCY', 'XKRY', 'SRY',
+    # X chromosome genes with Y homologs or escape X-inactivation
+    'XIST', 'TSIX', 'KDM6A', 'DDX3X', 'KDM5C', 'RPS4X', 'EIF1AX', 'USP9X',
+    'ZFX', 'TMSB4X', 'NLGN4X', 'PCDH11X'
+]
+
+# Step 1: Remove statistically significant genes from healthy controls
+baseline_genes = hc_regression[hc_regression['P_Adjusted'] < 0.05]['Gene'].tolist()
+print(f"\nBaseline sex-associated genes in healthy controls (statistical): {len(baseline_genes)}")
+
+# Step 2: Combine with known sex chromosome genes
+all_baseline_genes = list(set(baseline_genes + sex_chromosome_genes))
+print(f"Sex chromosome genes to remove: {len([g for g in sex_chromosome_genes if g in ssc_regression['Gene'].values])}")
+print(f"Total genes to exclude: {len(all_baseline_genes)}")
+
+# Step 3: Filter SSc results
+ssc_filtered = ssc_regression[~ssc_regression['Gene'].isin(all_baseline_genes)].copy()
+print(f"Disease-specific genes analyzed: {len(ssc_filtered)}")
+
+sig_disease_genes = ssc_filtered[ssc_filtered['P_Adjusted'] < 0.05]
+print(f"Significant disease-specific sex-associated genes: {len(sig_disease_genes)}")
+
+# ===============================
+# 6. VOLCANO PLOT
+# ===============================
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# Healthy Controls Volcano
+ax1 = axes[0]
+res_hc_plot = res_hc_df.copy()
+res_hc_plot['-log10(padj)'] = -np.log10(res_hc_plot['padj'].replace(0, 1e-300))
+res_hc_plot['Significant'] = (res_hc_plot['padj'] < 0.05).map({True: 'Yes', False: 'No'})
+
+colors_hc = res_hc_plot['Significant'].map({'Yes': 'red', 'No': 'gray'})
+ax1.scatter(res_hc_plot['log2FoldChange'], res_hc_plot['-log10(padj)'],
+           c=colors_hc, alpha=0.5, s=10)
+ax1.axhline(-np.log10(0.05), color='blue', linestyle='--', linewidth=1, label='padj = 0.05')
+ax1.axvline(0, color='black', linestyle='-', linewidth=0.5)
+ax1.set_xlabel('Log2 Fold Change (Male vs Female)', fontsize=12)
+ax1.set_ylabel('-Log10(Adjusted P-value)', fontsize=12)
+ax1.set_title(f'Healthy Controls: Sex-Differential Genes\n({len(baseline_sex_genes)} significant)',
+             fontsize=13, fontweight='bold')
+ax1.legend()
+ax1.grid(alpha=0.3)
+
+# SSc Filtered Volcano
+ax2 = axes[1]
+res_ssc_plot = res_ssc_filtered.copy()
+res_ssc_plot['-log10(padj)'] = -np.log10(res_ssc_plot['padj'].replace(0, 1e-300))
+res_ssc_plot['Significant'] = (res_ssc_plot['padj'] < 0.05).map({True: 'Yes', False: 'No'})
+
+colors_ssc = res_ssc_plot['Significant'].map({'Yes': 'darkgreen', 'No': 'lightgray'})
+ax2.scatter(res_ssc_plot['log2FoldChange'], res_ssc_plot['-log10(padj)'],
+           c=colors_ssc, alpha=0.5, s=10)
+ax2.axhline(-np.log10(0.05), color='blue', linestyle='--', linewidth=1, label='padj = 0.05')
+ax2.axvline(0, color='black', linestyle='-', linewidth=0.5)
+ax2.set_xlabel('Log2 Fold Change (Male vs Female)', fontsize=12)
+ax2.set_ylabel('-Log10(Adjusted P-value)', fontsize=12)
+ax2.set_title(f'SSc Patients: Disease-Specific Sex-Differential Genes\n({len(sig_disease_genes)} significant, baseline subtracted)',
+             fontsize=13, fontweight='bold')
+ax2.legend()
+ax2.grid(alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('volcano_plots.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ===============================
+# 7. HEATMAP
+# ===============================
+top_genes = res_ssc_filtered.nsmallest(30, "padj").index
+
+# Get normalized counts
+norm_df = pd.DataFrame(
+    dds_ssc.layers["normed_counts"],
+    index=dds_ssc.obs_names,
+    columns=dds_ssc.var_names
+)
+
+# Log-transform and z-score
+heatmap_data = np.log1p(norm_df[top_genes].T)
+heatmap_z = heatmap_data.apply(lambda x: (x - x.mean()) / x.std(), axis=1)
+
+# Sort by sex
+ssc_meta_sorted = ssc_meta.sort_values("Sex")
+heatmap_z = heatmap_z[ssc_meta_sorted.index]
+
+# Colors
+sex_colors = ssc_meta_sorted["Sex"].map({"Male": "royalblue", "Female": "hotpink"})
+
+# Plot
+g = sns.clustermap(
+    heatmap_z,
+    col_colors=sex_colors,
+    col_cluster=False,
+    row_cluster=True,
+    cmap="RdBu_r",
+    center=0,
+    figsize=(12, 10),
+    yticklabels=True,
+    cbar_kws={'label': 'Z-score'}
+)
+
+legend_elements = [Patch(facecolor="royalblue", label="Male"),
+                   Patch(facecolor="hotpink", label="Female")]
+g.ax_heatmap.legend(handles=legend_elements, title="Sex",
+                    bbox_to_anchor=(1.3, 1), loc='upper left', frameon=True)
+
+plt.suptitle("Top 30 Disease-Specific Sex-Differential Genes in SSc\n(Baseline sex differences subtracted)",
+            y=0.98, fontsize=14, fontweight='bold')
+plt.savefig('heatmap_top30.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ===============================
+# 8. MA PLOT
+# ===============================
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# Healthy Controls MA Plot
+ax1 = axes[0]
+res_hc_plot = res_hc_df.copy()
+res_hc_plot['Significant'] = (res_hc_plot['padj'] < 0.05).map({True: 'Yes', False: 'No'})
+colors_hc = res_hc_plot['Significant'].map({'Yes': 'red', 'No': 'gray'})
+
+ax1.scatter(res_hc_plot['baseMean'], res_hc_plot['log2FoldChange'],
+           c=colors_hc, alpha=0.5, s=10)
+ax1.axhline(0, color='blue', linestyle='--', linewidth=1)
+ax1.set_xscale('log')
+ax1.set_xlabel('Mean Expression (baseMean)', fontsize=12)
+ax1.set_ylabel('Log2 Fold Change (Male vs Female)', fontsize=12)
+ax1.set_title('Healthy Controls: MA Plot', fontsize=13, fontweight='bold')
+ax1.grid(alpha=0.3)
+
+# SSc MA Plot
+ax2 = axes[1]
+res_ssc_plot = res_ssc_filtered.copy()
+res_ssc_plot['Significant'] = (res_ssc_plot['padj'] < 0.05).map({True: 'Yes', False: 'No'})
+colors_ssc = res_ssc_plot['Significant'].map({'Yes': 'darkgreen', 'No': 'lightgray'})
+
+ax2.scatter(res_ssc_plot['baseMean'], res_ssc_plot['log2FoldChange'],
+           c=colors_ssc, alpha=0.5, s=10)
+ax2.axhline(0, color='blue', linestyle='--', linewidth=1)
+ax2.set_xscale('log')
+ax2.set_xlabel('Mean Expression (baseMean)', fontsize=12)
+ax2.set_ylabel('Log2 Fold Change (Male vs Female)', fontsize=12)
+ax2.set_title('SSc Patients: MA Plot (Disease-Specific)', fontsize=13, fontweight='bold')
+ax2.grid(alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('ma_plots.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ===============================
+# 9. SUMMARY STATISTICS
+# ===============================
+print("\n" + "="*60)
+print("SUMMARY STATISTICS")
+print("="*60)
+
+print("\nHealthy Controls (Male vs Female):")
+print(f"  Total genes analyzed: {len(res_hc_df)}")
+print(f"  Significant genes (padj < 0.05): {len(baseline_sex_genes)}")
+print(f"  Upregulated in males: {sum((res_hc_df['padj'] < 0.05) & (res_hc_df['log2FoldChange'] > 0))}")
+print(f"  Upregulated in females: {sum((res_hc_df['padj'] < 0.05) & (res_hc_df['log2FoldChange'] < 0))}")
+
+print("\nSSc Patients (Disease-Specific, After Baseline Subtraction):")
+print(f"  Total genes analyzed: {len(res_ssc_filtered)}")
+print(f"  Significant genes (padj < 0.05): {len(sig_disease_genes)}")
+print(f"  Upregulated in males: {sum((res_ssc_filtered['padj'] < 0.05) & (res_ssc_filtered['log2FoldChange'] > 0))}")
+print(f"  Upregulated in females: {sum((res_ssc_filtered['padj'] < 0.05) & (res_ssc_filtered['log2FoldChange'] < 0))}")
+
+print("\nTop 10 Disease-Specific Sex-Differential Genes:")
+print(res_ssc_filtered.nsmallest(10, 'padj')[['log2FoldChange', 'padj', 'baseMean']])
+
+# ===============================
+# 10. SAVE RESULTS
+# ===============================
+res_hc_df.to_csv('healthy_controls_sex_diff.csv')
+res_ssc_filtered.to_csv('ssc_disease_specific_sex_diff.csv')
+sig_disease_genes.to_csv('ssc_significant_disease_specific_genes.csv')
+
+print("\nResults saved:")
+print("  - healthy_controls_sex_diff.csv")
+print("  - ssc_disease_specific_sex_diff.csv")
+print("  - ssc_significant_disease_specific_genes.csv")
+print("  - volcano_plots.png")
+print("  - heatmap_top30.png")
+print("  - ma_plots.png")
