@@ -96,6 +96,8 @@ This approach removes inherent biological genetic differences between sexes (e.g
 
 **Analysis confirmed successful filtering:** Y-axis scale differences in volcano plots showed effective removal of baseline sex DEGs in control comparisons.
 
+![Volcano plot](bulkRNA_workspace/Figure/volcano_plots-2.png)
+
 ---
 
 ## Key Findings
@@ -118,6 +120,8 @@ This approach removes inherent biological genetic differences between sexes (e.g
 ### RNA-Seq Results
 - Successfully identified top 30 genes differentially expressed between SSc males and females
 - Genes predominantly **up-regulated in female patients** and **down-regulated in males**
+  
+ ![Heatmap](bulkRNA_workspace/Figure/heatmap_top30-2.png)
 - Heat maps demonstrate clear clustering patterns by sex within SSc patients
 
 ### Cross-Dataset Validation
