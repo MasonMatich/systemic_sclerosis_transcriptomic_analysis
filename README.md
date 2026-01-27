@@ -69,6 +69,7 @@ Farutin, V., Kurtagic, E., Pradines, J.R. et al. Multiomic study of skin, periph
 | SSc | 23 | 35 |
 
 **Reference:**
+
 Skaug, B., Khanna, D., Swindell, W. R., Hinchcliff, M. E., Frech, T. M., Steen, V. D., Hant, F. N., Gordon, J. K., Shah, A. A., Zhu, L., Zheng, W. J., Browning, J. L., Barron, A. M. S., Wu, M., Visvanathan, S., Baum, P., Franks, J. M., Whitfield, M. L., Shanmugam, V. K., Domsic, R. T., … Assassi, S. (2020). Global skin gene expression analysis of early diffuse cutaneous systemic sclerosis shows a prominent innate and adaptive inflammatory profile. *Annals of the rheumatic diseases*, 79(3), 379–386. https://doi.org/10.1136/annrheumdis-2019-215894
 
 ---
